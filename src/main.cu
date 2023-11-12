@@ -1,5 +1,9 @@
 #include "cuda.h"
 #include <iostream>
+#include <cstdio>
+
+#include "Image.hpp"
+
 
 __global__ void populate(int *a) {
     printf("%d, %d, %d, %d, %d, %d\n", blockIdx.x, blockIdx.y, blockIdx.z, threadIdx.x, threadIdx.y, threadIdx.z);
@@ -20,5 +24,9 @@ int main() {
         std::cout << retVal[i] << " ";
     }
     std::cout << "\n";
+
+    Image img("TestImages/color_test.ppm");
+    img.writeImage("TestImages/newTest2.ppm");
+
     return 0;
 }
