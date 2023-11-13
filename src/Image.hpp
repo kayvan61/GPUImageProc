@@ -7,11 +7,20 @@ typedef struct {
 class Image {
     int w, h;
     int maxVal;
-    Pixel **rawImage;
+    Pixel **hostImage;
+    Pixel **devImage;
 
-public: 
+    void freeHostImage();
+    void freeDevImage();
+
+public:
+    ~Image();
+    Image();
     Image(std::string fname);
-
-
+    void readImage(std::string fname);
     void writeImage(std::string fname);
+    void copyToDevice();
+
+    Pixel** getRawDeviceBuffer();
+    Pixel** getRawHostBuffer();
 };

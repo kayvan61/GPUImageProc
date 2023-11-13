@@ -27,6 +27,8 @@ int main() {
 
     Image img("TestImages/color_test.ppm");
     img.writeImage("TestImages/newTest2.ppm");
+    img.copyToDevice();
+    
 
     return 0;
 }

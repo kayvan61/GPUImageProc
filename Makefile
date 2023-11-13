@@ -3,12 +3,12 @@ CXX=nvcc
 SRC_DIR := ./src
 OBJ_DIR := ./objs
 CUDA_SRC_FILES := $(wildcard $(SRC_DIR)/*.cu)
-CUDA_OBJ_FILES := $(patsubst $(SRC_DIR)/%.cpp,$(OBJ_DIR)/%.o,$(CUDA_SRC_FILES))
+CUDA_OBJ_FILES := $(patsubst $(SRC_DIR)/%.cu,$(OBJ_DIR)/%.o,$(CUDA_SRC_FILES))
 SRC_FILES := $(wildcard $(SRC_DIR)/*.cpp)
 OBJ_FILES := $(patsubst $(SRC_DIR)/%.cpp,$(OBJ_DIR)/%.o,$(SRC_FILES))
 LDFLAGS := 
 CPPFLAGS := 
-CXXFLAGS := 
+CXXFLAGS := -g
 
 main: $(OBJ_FILES) $(CUDA_OBJ_FILES)
 	$(CXX) $(LDFLAGS) -o $@ $^
