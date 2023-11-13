@@ -4,31 +4,93 @@
 
 #include "Image.hpp"
 
+__global__ void conv(Pixel **img_out, Pixel **img_in, unsigned image_w, unsigned image_h,
+                     float *conv_mask, unsigned conv_w, unsigned conv_h) {
+    unsigned img_x = blockIdx.x * 32 + threadIdx.x;
+    unsigned img_y = blockIdx.y * 32 + threadIdx.y;
 
-__global__ void populate(int *a) {
-    printf("%d, %d, %d, %d, %d, %d\n", blockIdx.x, blockIdx.y, blockIdx.z, threadIdx.x, threadIdx.y, threadIdx.z);
-    int idx = blockIdx.x * 32 + threadIdx.x;
-    a[idx] = idx;
+    int conv_window_x_s = img_x - (conv_w/2);
+    int conv_window_x_e = img_x + (conv_w/2);
+
+    int conv_window_y_s = img_y - (conv_h/2);
+    int conv_window_y_e = img_y + (conv_h/2);
+
+    if(
+        conv_window_x_s > 0 && conv_window_x_e < image_w &&
+        conv_window_y_s > 0 && conv_window_y_e < image_h
+    ) {
+        Pixel resImage = {0, 0, 0};
+        for(unsigned i = 0; i < conv_h; i++) {
+            for(unsigned j = 0; j < conv_w; j++) {
+                resImage.r += img_in[conv_window_y_s + i][conv_window_x_s + j].r * conv_mask[i*conv_w + j];
+                resImage.g += img_in[conv_window_y_s + i][conv_window_x_s + j].g * conv_mask[i*conv_w + j];
+                resImage.b += img_in[conv_window_y_s + i][conv_window_x_s + j].b * conv_mask[i*conv_w + j];
+            }
+        }
+        img_out[img_y][img_x] = resImage;
+    }
+}
+
+__global__ void clearImage(Pixel **a, unsigned w, unsigned h) {
+    unsigned x = blockIdx.x * 32 + threadIdx.x;
+    unsigned y = blockIdx.y * 32 + threadIdx.y;
+    if(x < w && y < h) {
+        a[y][x] = {0, 0, 0};
+    }
+}
+
+template<typename T>
+void cuda2dAlloc(T*** outBuffer, unsigned w, unsigned h) {
+    cudaMalloc(outBuffer, sizeof(T*) * h);
+    T **temp = (T **)malloc(sizeof(T*) * h);
+    for(unsigned i = 0; i < h; i++) {
+        cudaMalloc((void**)(&temp[i]), sizeof(T) * w);
+    }
+    cudaMemcpy(*outBuffer, temp, sizeof(T*) * h, ::cudaMemcpyHostToDevice);
+    free(temp);
 }
 
 int main() {
-    int *retVal;
-    int *a;
-    retVal = (int*)malloc(sizeof(int) * 32 * 512);
-    cudaMalloc((void**)&a, sizeof(int) * 32 * 512);
-    dim3 threadBlockDim = {32};
-    dim3 BlockDim = {512};
-    populate<<<BlockDim, threadBlockDim>>>(a);
-    cudaMemcpy(retVal, a, sizeof(int) * 32 * 512, ::cudaMemcpyDeviceToHost);
-    for(int i = 512; i < 512 + 32; i++) {
-        std::cout << retVal[i] << " ";
-    }
-    std::cout << "\n";
+    float host_blur_host[] = {
+        0.0625f, 0.125f, 0.0625f,
+        0.125f, 0.25f, 0.125f,
+        0.0625f, 0.125f, 0.0625f
+    };
+    float *dev_blur_mask;
+    cudaMalloc((void**)&dev_blur_mask, sizeof(float) * 9);
+    cudaMemcpy(dev_blur_mask, host_blur_host, sizeof(float) * 9, ::cudaMemcpyHostToDevice);
 
-    Image img("TestImages/color_test.ppm");
-    img.writeImage("TestImages/newTest2.ppm");
+
+    Image img("TestImages/3c7re350fr861.ppm");
+    Image outputImage;
+
+    std::pair<unsigned, unsigned> imgDims;
+    imgDims = img.getImageDims();
+    unsigned w = imgDims.first;
+    unsigned h = imgDims.second;
+    printf("image dims: %d %d\n", w, h);
+    outputImage.createBlankDeviceImage(w, h, 255);
+
+    img.writeImage("TestImages/before.ppm");
     img.copyToDevice();
-    
+
+    if(w * h <= 1024) {
+        dim3 pictureTBDim = {w, h};
+        conv<<<1,pictureTBDim>>>(outputImage.getRawDeviceBuffer(), img.getRawDeviceBuffer(), w, h,
+                                 dev_blur_mask, 3, 3);
+    }
+    else {
+        dim3 pictureTBDim = {32, 32};
+        dim3 blocksTBDim = {(w/32) + 1, (h/32) + 1};
+        printf("thread dims: x: %d y: %d\n", 32, 32);
+        printf("block  dims: x: %d y: %d\n", blocksTBDim.x, blocksTBDim.y);
+        conv<<<blocksTBDim,pictureTBDim>>>(outputImage.getRawDeviceBuffer(), img.getRawDeviceBuffer(), w, h,
+                                           dev_blur_mask, 3, 3);
+    }
+
+    cudaDeviceSynchronize();
+    outputImage.copyToHost();
+    outputImage.writeImage("TestImages/after.ppm");
 
     return 0;
 }

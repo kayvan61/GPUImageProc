@@ -2,6 +2,7 @@
 #include "Image.hpp"
 #include <iostream>
 #include <cstdio>
+#include <cassert>
 
 Image::Image() {
     w = 0;
@@ -18,12 +19,11 @@ Image::Image(std::string fname) {
     hostImage = nullptr;
     devImage = nullptr;
 
-    readImage(fname);
+    readHostImage(fname);
 }
 
 void Image::freeDevImage() {
-    if(!devImage) 
-        return;
+    assert(devImage && "trying to free uninited devImage");
 
     Pixel **temp = (Pixel **)malloc(sizeof(Pixel*) * h);
     cudaMemcpy(temp, devImage, sizeof(Pixel*) * h, ::cudaMemcpyDeviceToHost);
@@ -32,33 +32,33 @@ void Image::freeDevImage() {
     }
     free(temp);
     cudaFree(devImage);
+    devImage = nullptr;
 }
 
 void Image::freeHostImage() {
-    if(!hostImage) 
-        return;
+    assert(hostImage && "trying to free uninited hostImage");
+
     for(int i = 0; i < h; i++) {
         free((hostImage[i]));
     }
     free(hostImage);
+    hostImage = nullptr;
 }
 
 Image::~Image() {
-    freeHostImage();
-    freeDevImage();
+    if(hostImage)
+        freeHostImage();
+    if(devImage)
+        freeDevImage();
 }
 
-void Image::readImage(std::string fname) {
-    freeHostImage();
-
-    devImage = nullptr;
+void Image::readHostImage(std::string fname) {
     FILE *in = fopen(fname.c_str(), "rb");
     fscanf(in, "P6 %d %d %d\n", &w, &h, &maxVal);
 
-    hostImage = (Pixel**)malloc(h * sizeof(Pixel*));
+    allocHostImage();
 
     for(int i = 0; i < h; i++) {
-        hostImage[i] = (Pixel*)malloc(w * sizeof(Pixel));
         for(int j = 0; j < w; j++) {
             Pixel *curPix = &(hostImage[i][j]);
             curPix->r = fgetc(in);
@@ -79,8 +79,8 @@ Pixel** Image::getRawHostBuffer() {
 void Image::writeImage(std::string fname) {
     FILE *out = fopen(fname.c_str(), "wb");
     fprintf(out, "P6 %d %d %d\n", w, h, maxVal);
-    for(int i=0; i<h; i++) {
-        for(int j=0; j<w; j++) {
+    for(unsigned i=0; i<h; i++) {
+        for(unsigned j=0; j<w; j++) {
             Pixel *curPix = &(hostImage[i][j]);
             fputc(curPix->r, out);
             fputc(curPix->g, out);
@@ -90,13 +90,60 @@ void Image::writeImage(std::string fname) {
     fclose(out);
 }
 
-void Image::copyToDevice() {
+void Image::allocDeviceImage() {
     cudaMalloc((void**)&devImage, sizeof(Pixel*) * h);
     Pixel **temp = (Pixel **)malloc(sizeof(Pixel*) * h);
-    for(int i = 0; i < h; i++) {
+    for(unsigned i = 0; i < h; i++) {
         cudaMalloc((void**)(&temp[i]), sizeof(Pixel) * w);
-        cudaMemcpy(temp[i], hostImage[i], sizeof(Pixel) * w, ::cudaMemcpyHostToDevice);
     }
     cudaMemcpy(devImage, temp, sizeof(Pixel*) * h, ::cudaMemcpyHostToDevice);
     free(temp);
+}
+void Image::allocHostImage() {
+    hostImage = (Pixel**)malloc(h * sizeof(Pixel*));
+
+    for(unsigned i = 0; i < h; i++) {
+        hostImage[i] = (Pixel*)malloc(w * sizeof(Pixel));
+    }
+}
+
+void Image::copyToHost() {
+    if(!hostImage) {
+        allocHostImage();
+    }
+    Pixel **temp = (Pixel **)malloc(sizeof(Pixel*) * h);
+    cudaMemcpy(temp, devImage, sizeof(Pixel*) * h, ::cudaMemcpyDeviceToHost);
+    for(unsigned i = 0; i < h; i++) {
+        cudaMemcpy(hostImage[i], temp[i], sizeof(Pixel) * w, ::cudaMemcpyDeviceToHost);
+    }
+    free(temp);
+}
+
+void Image::createBlankDeviceImage(int w, int h, int max) {
+    this->w = w;
+    this->h = h;
+    maxVal = max;
+    if(hostImage) 
+        freeHostImage();
+    if(devImage)
+        freeDevImage();
+    allocDeviceImage();
+}
+
+
+void Image::copyToDevice() {
+    if (!devImage)
+        allocDeviceImage();
+    
+    // array of device pointers
+    Pixel **temp = (Pixel **)malloc(sizeof(Pixel*) * h);
+    cudaMemcpy(temp, devImage, sizeof(Pixel*), ::cudaMemcpyDeviceToHost);
+    for(unsigned i = 0; i < h; i++) {
+        cudaMemcpy(temp[i], hostImage[i], sizeof(Pixel) * w, ::cudaMemcpyHostToDevice);
+    }
+    free(temp);
+}
+
+std::pair<unsigned, unsigned> Image::getImageDims() {
+    return {w, h};
 }

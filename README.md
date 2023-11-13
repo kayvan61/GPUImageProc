@@ -2,7 +2,7 @@
 
 cuda code to apply convolutions to images in ppm format. 
 
-compile with make
+compile with `make`
 
 run with `./main <input file> <output file>`
 
