@@ -98,6 +98,7 @@ void Image::allocDeviceImage() {
     }
     cudaMemcpy(devImage, temp, sizeof(Pixel*) * h, ::cudaMemcpyHostToDevice);
     free(temp);
+    cudaDeviceSynchronize();
 }
 void Image::allocHostImage() {
     hostImage = (Pixel**)malloc(h * sizeof(Pixel*));
@@ -128,6 +129,7 @@ void Image::createBlankDeviceImage(int w, int h, int max) {
     if(devImage)
         freeDevImage();
     allocDeviceImage();
+    cudaDeviceSynchronize();
 }
 
 
@@ -137,11 +139,12 @@ void Image::copyToDevice() {
     
     // array of device pointers
     Pixel **temp = (Pixel **)malloc(sizeof(Pixel*) * h);
-    cudaMemcpy(temp, devImage, sizeof(Pixel*), ::cudaMemcpyDeviceToHost);
+    cudaMemcpy(temp, devImage, sizeof(Pixel*) * h, ::cudaMemcpyDeviceToHost);
     for(unsigned i = 0; i < h; i++) {
         cudaMemcpy(temp[i], hostImage[i], sizeof(Pixel) * w, ::cudaMemcpyHostToDevice);
     }
     free(temp);
+    cudaDeviceSynchronize();
 }
 
 std::pair<unsigned, unsigned> Image::getImageDims() {
