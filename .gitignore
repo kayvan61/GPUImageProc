@@ -8,3 +8,5 @@ TestImages/
 objs/
 .vscode/
 main
+conv
+histo
