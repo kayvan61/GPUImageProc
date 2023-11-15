@@ -11,3 +11,7 @@ main
 conv
 histo
 temp
+env/
+affine
+edgeDetect
+*.ppm

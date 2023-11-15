@@ -6,9 +6,15 @@ SRC_FILES := $(wildcard $(SRC_DIR)/*.cpp)
 OBJ_FILES := $(patsubst $(SRC_DIR)/%.cpp,$(OBJ_DIR)/%.o,$(SRC_FILES))
 LDFLAGS := 
 CPPFLAGS := 
-CXXFLAGS := -g
+CXXFLAGS := -g -O3 -ccbin=/opt/cuda/bin
 
-all: conv histo
+all: conv histo affine edgeDetect
+
+edgeDetect: ./objs/Image.o ./objs/edgeDetect.o
+	$(CXX) $(LDFLAGS) -o $@ $^
+
+affine: ./objs/Image.o ./objs/affine.o
+	$(CXX) $(LDFLAGS) -o $@ $^
 
 conv: ./objs/Image.o ./objs/naiveConv.o
 	$(CXX) $(LDFLAGS) -o $@ $^
@@ -28,4 +34,4 @@ clean:
 	rm histo || true
 	rm conv || true
 
-.PHONY: clean all
+.PHONY: clean all 
