@@ -20,6 +20,18 @@ __global__ void sobelSum(float *intentOut, float *dirOut, float *imX, float *imY
     }
 }
 
+__global__ void dualThresh(float *out, float *in, float *low, float *high, unsigned w, unsigned h) {
+    unsigned img_x = blockIdx.x * blockDim.x + threadIdx.x;
+    unsigned img_y = blockIdx.y * blockDim.y + threadIdx.y;
+
+    if(img_x < w && img_y < h) {
+        if(in[img_y * w + img_x] > 70)
+            out[img_y * w + img_x] = 255;
+        else if (in[img_y * w + img_x] < 20)
+            out[img_y * w + img_x] = 0;
+    }
+}
+
 __global__ void gradientDimin(float *imgOut, float* intens, float *dir, unsigned w, unsigned h) {
     int img_x = blockIdx.x * blockDim.x + threadIdx.x;
     int img_y = blockIdx.y * blockDim.y + threadIdx.y;
@@ -53,18 +65,18 @@ __global__ void gradientDimin(float *imgOut, float* intens, float *dir, unsigned
 }
 
 // assumes flat threads
-__global__ void max(float *img_out, float *a, unsigned len) {
+__global__ void max(float *img_out, int *a, unsigned len) {
     unsigned index = blockIdx.x * blockDim.x + threadIdx.x;
 
-    extern __shared__ float portion[];
+    extern __shared__ int portion[];
     portion[threadIdx.x] = a[index];
     int eleToRed = blockDim.x;
     __syncthreads();
     for(int i = 1; i < blockDim.x; i *= 2, eleToRed /= 2) {
         if(2*threadIdx.x+i < eleToRed) {
             int resIdx = threadIdx.x;
-            float ele1 = -1.0f; 
-            float ele2 = -1.0f; 
+            int ele1 = -1.0f; 
+            int ele2 = -1.0f; 
             if(2*threadIdx.x < len) {
                 ele1 = portion[2*threadIdx.x];
             }
@@ -75,8 +87,48 @@ __global__ void max(float *img_out, float *a, unsigned len) {
         }
         __syncthreads();
     }
-    img_out[blockIdx.x] = portion[0];
+    img_out[blockIdx.x] = (float)portion[0];
 }
+
+__global__ void argMax(float *img_out, int *a, unsigned len) {
+    unsigned index = blockIdx.x * blockDim.x + threadIdx.x;
+
+    a[0] = 0;
+    extern __shared__ int portion[];
+    int *indexarr = portion + blockDim.x;
+    if(threadIdx.x < len) {
+        portion[threadIdx.x] = a[index];
+        indexarr[threadIdx.x] = threadIdx.x;
+    }
+    else {
+        portion[threadIdx.x] = -1;
+        indexarr[threadIdx.x] = -1;
+    }
+    int eleToRed = blockDim.x;
+    __syncthreads();
+    for(int i = 1; i < blockDim.x; i *= 2, eleToRed /= 2) {
+        if(2*threadIdx.x+i < eleToRed) {
+            int resIdx = threadIdx.x;
+            int ele1 = -1; 
+            int idx1 = -1;
+            int ele2 = -1; 
+            int idx2 = -1;
+            if(2*threadIdx.x < len) {
+                ele1 = portion[2*threadIdx.x];
+                idx1 = indexarr[2*threadIdx.x];
+            }
+            if(2*threadIdx.x + i < len) {
+                ele2 = portion[2*threadIdx.x+1];
+                idx2 = indexarr[2*threadIdx.x+1];
+            }
+            indexarr[resIdx] = ele1 > ele2 ? idx1 : idx2;
+            portion[resIdx] = ele1 > ele2 ? ele1 : ele2;
+        }
+        __syncthreads();
+    }
+    img_out[blockIdx.x] = (float)indexarr[0];
+}
+
 
 __global__ void imgSum(float *img_out, float *a, float *b, unsigned image_w, unsigned image_h) {
     unsigned img_x = blockIdx.x * blockDim.x + threadIdx.x;
@@ -235,12 +287,28 @@ int main(int argc, char** argv) {
     float* g_img;
     float* g_img2;
     float* g_img3;
+    float* g_img4;
+    float* g_imgsmooth;
     float *intens, *dir;
     cudaMalloc(&g_img, sizeof(float)*w*h);
     cudaMalloc(&g_img2, sizeof(float)*w*h);
     cudaMalloc(&g_img3, sizeof(float)*w*h);
+    cudaMalloc(&g_img4, sizeof(float)*w*h);
+    cudaMalloc(&g_imgsmooth, sizeof(float)*w*h);
     cudaMalloc(&intens, sizeof(float)*w*h);
     cudaMalloc(&dir, sizeof(float)*w*h);
+
+    dim3 histTB = {BLOCKSIZE, 1};
+    dim3 histGB = {(w/BLOCKSIZE) + 1, h};
+    int* devHist;
+    int* devLocalHists;
+    float *low, *high;
+    cudaMalloc((void**)&devLocalHists, sizeof(int) * histGB.x * histGB.y * ONE_HIST_SIZE);
+    cudaMemset(devLocalHists, 0, sizeof(int) * histGB.x * histGB.y * ONE_HIST_SIZE);
+    cudaMalloc((void**)&devHist, sizeof(int) * ONE_HIST_SIZE);
+    cudaMemset(devHist, 0, sizeof(int) * ONE_HIST_SIZE);
+    cudaMalloc((void**)&low, sizeof(float));
+    cudaMalloc((void**)&high, sizeof(float));
 
 
     outputImage.createBlankDeviceImage(w, h, 255);
@@ -252,24 +320,51 @@ int main(int argc, char** argv) {
 
     toGrey<<<blocksTBDim, pictureTBDim>>>(g_img, img.getRawDeviceBuffer(), w, h);
     cudaDeviceSynchronize();
-    conv<<<blocksTBDim, pictureTBDim>>>(g_img2, g_img, w, h, dev_blur_mask, fliter_dim, fliter_dim);
+    conv<<<blocksTBDim, pictureTBDim>>>(g_imgsmooth, g_img, w, h, dev_blur_mask, fliter_dim, fliter_dim);
     cudaDeviceSynchronize();
-    conv<<<blocksTBDim, pictureTBDim>>>(g_img , g_img2, w, h, devIx, sobelDim, sobelDim);
+    conv<<<blocksTBDim, pictureTBDim>>>(g_img , g_imgsmooth, w, h, devIx, sobelDim, sobelDim);
     cudaDeviceSynchronize();
-    conv<<<blocksTBDim, pictureTBDim>>>(g_img3, g_img2, w, h, devIy, sobelDim, sobelDim);
+    conv<<<blocksTBDim, pictureTBDim>>>(g_img3, g_imgsmooth, w, h, devIy, sobelDim, sobelDim);
     cudaDeviceSynchronize();
     sobelSum<<<blocksTBDim, pictureTBDim>>>(intens, dir, g_img, g_img3, w, h);
     cudaDeviceSynchronize();
     gradientDimin<<<blocksTBDim, pictureTBDim>>>(g_img2, intens, dir, w, h);
-    //imgSum<<<blocksTBDim, pictureTBDim>>>(g_img2, g_img, g_img3, w, h);
+
+
+    histogram<<<histGB,histTB>>>(devLocalHists, g_img2, w, h);
+    reduce<<<histGB, ONE_HIST_SIZE>>>(devHist, devLocalHists);
+
+
+    argMax<<<1, 1024, sizeof(int) * 1024 * 2>>>(low, devHist, ONE_HIST_SIZE/2);
+    argMax<<<1, 1024, sizeof(int) * 1024 * 2>>>(high, devHist + ONE_HIST_SIZE/2, ONE_HIST_SIZE/2);
+    dualThresh<<<blocksTBDim, pictureTBDim>>>(g_img4, g_img2, low, high, w, h);
+    
 
     cudaDeviceSynchronize();
+
+    int *hostHist = (int*)malloc(sizeof(int) * ONE_HIST_SIZE);
+    cudaMemcpy(hostHist, devHist, sizeof(int) * ONE_HIST_SIZE, cudaMemcpyDeviceToHost);
+    int sum = 0;
+    printf("====== result ======\n");
+    for(int i = 0; i < ONE_HIST_SIZE; i++) {
+        sum += hostHist[i];
+        printf("%d, ", hostHist[i]);
+    }
+    printf("\n");
+    printf("sum: %d\n", sum);   
+
+
+    float hostLow, hostHigh;
+    cudaMemcpy(&hostLow, low, sizeof(float), cudaMemcpyDeviceToHost);
+    cudaMemcpy(&hostHigh, high, sizeof(float), cudaMemcpyDeviceToHost);
+    std::cout << "High " << hostHigh << std::endl;
+    std::cout << "Low " << hostLow << std::endl;
 
     float* hostOut = (float*)malloc(sizeof(float) * w * h);
     cudaMemcpy(hostOut, intens, sizeof(float) * w * h, cudaMemcpyDeviceToHost);
 
     char fname[250];
-    sprintf(fname, "%s", argv[2]);
+    sprintf(fname, "i-%s", argv[2]);
 
     outputImage.setChannel(hostOut, "r");
     outputImage.setChannel(hostOut, "g");
@@ -278,6 +373,13 @@ int main(int argc, char** argv) {
 
     cudaMemcpy(hostOut, g_img3, sizeof(float) * w * h, cudaMemcpyDeviceToHost);
     sprintf(fname, "y-%s", argv[2]);
+    outputImage.setChannel(hostOut, "r");
+    outputImage.setChannel(hostOut, "g");
+    outputImage.setChannel(hostOut, "b");
+    outputImage.writeImage(fname);
+
+    cudaMemcpy(hostOut, g_imgsmooth, sizeof(float) * w * h, cudaMemcpyDeviceToHost);
+    sprintf(fname, "s-%s", argv[2]);
     outputImage.setChannel(hostOut, "r");
     outputImage.setChannel(hostOut, "g");
     outputImage.setChannel(hostOut, "b");
@@ -292,6 +394,13 @@ int main(int argc, char** argv) {
 
     cudaMemcpy(hostOut, g_img2, sizeof(float) * w * h, cudaMemcpyDeviceToHost);
     sprintf(fname, "d-%s", argv[2]);
+    outputImage.setChannel(hostOut, "r");
+    outputImage.setChannel(hostOut, "g");
+    outputImage.setChannel(hostOut, "b");
+    outputImage.writeImage(fname);
+
+    cudaMemcpy(hostOut, g_img4, sizeof(float) * w * h, cudaMemcpyDeviceToHost);
+    sprintf(fname, "%s", argv[2]);
     outputImage.setChannel(hostOut, "r");
     outputImage.setChannel(hostOut, "g");
     outputImage.setChannel(hostOut, "b");
