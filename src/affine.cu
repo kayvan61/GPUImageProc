@@ -4,25 +4,33 @@
 
 #include "Image.hpp"
 
-__global__ void move(Pixel* img_out, Pixel* outLocs, Pixel *img_in, unsigned image_w, unsigned image_h) {
-    unsigned img_x = blockIdx.x * blockDim.x + threadIdx.x;
-    unsigned img_y = blockIdx.y * blockDim.y + threadIdx.y;
+__constant__ float transform[9];
+
+__global__ void move(Pixel* img_out, Pixel* outLocs, Pixel *img_in, float* trans, unsigned image_w, unsigned image_h) {
+    int img_x = blockIdx.x * blockDim.x + threadIdx.x;
+    int img_y = blockIdx.y * blockDim.y + threadIdx.y;
+    int x = 0, y = 0;
+    x += img_x * trans[0];
+    x += img_y * trans[1];
+    x += 1 * trans[2];
+
+    y += img_x * trans[3];
+    y += img_y * trans[4];
+    y += 1 * trans[5];
+    
     if(img_x >= image_w || img_y >= image_h)
         return;
-    
-    Pixel in_pix = img_in[img_y * image_w + img_x];
-    int out_x = outLocs[img_y * image_w + img_x].r;
-    int out_y = outLocs[img_y * image_w + img_x].g;
-    while(out_y < 0)
-        out_y += image_h;
-    while(out_y >= image_h)
-        out_y -= image_h;
-
-    while(out_x < 0)
-        out_x += image_w;
-    while(out_x >= image_w)
-        out_x -= image_w;
-    img_out[out_y * image_w + out_x] = in_pix;
+    Pixel srcPix = img_in[img_y * image_w + img_x];
+    if(y < 0)
+        return;
+    if(y >= image_h)
+        return;
+    if(x < 0)
+        return;
+    if(x >= image_w)
+        return;
+    __syncthreads();
+    img_out[y * image_w + x] = srcPix;
 }
 
 __global__ void newLocs(Pixel* outLocs, unsigned image_w, unsigned image_h, float* transform) {
@@ -52,39 +60,39 @@ int main(int argc, char** argv) {
     Image img(argv[1]);
     Image locMap;
     Image result;
+    std::pair<unsigned, unsigned> imgDims;
+    imgDims = img.getImageDims();
+    unsigned w = imgDims.first;
+    unsigned h = imgDims.second;
 
     // float tranform[] = {
     //     0.707106f, 0.707106f, 0,
     //     -0.707106f, 0.707106f, 0,
     //     0, 0, 1
     // };
-    float tranform[] = {
-        -1, 0, 0,
+    float tranformHost[] = {
+        -1, 0, (float)w,
         0, 1, 0,
         0, 0, 1
     };
+    cudaMemcpyToSymbol(transform, tranformHost, sizeof(float) * 9);
     float* devTrans;
     cudaMalloc((void**)&devTrans, sizeof(float) * 9);
-    cudaMemcpy(devTrans, tranform, sizeof(float) * 9, cudaMemcpyHostToDevice);
+    cudaMemcpy(devTrans, tranformHost, sizeof(float) * 9, cudaMemcpyHostToDevice);
     
-    std::pair<unsigned, unsigned> imgDims;
-    imgDims = img.getImageDims();
-    unsigned w = imgDims.first;
-    unsigned h = imgDims.second;
+    
     printf("image dims: %d %d\n", w, h);
     locMap.createBlankDeviceImage(w, h, std::max(w, h) + 1);
     result.createBlankDeviceImage(w, h, 255);
 
     dim3 pictureTBDim = {32, 32};
-    dim3 blocksTBDim = {(w/32) + 1, (h/32) + 1};
+    dim3 blocksTBDim = {(w/pictureTBDim.x) + 1, (h/pictureTBDim.y) + 1};
 
     img.copyToDevice();
 
     printf("thread dims: x: %d y: %d\n", pictureTBDim.x, pictureTBDim.y);
     printf("block  dims: x: %d y: %d\n", blocksTBDim.x, blocksTBDim.y);
-    newLocs<<<blocksTBDim,pictureTBDim>>>(locMap.getRawDeviceBuffer(), w, h, devTrans);
-    cudaDeviceSynchronize();
-    move<<<blocksTBDim, pictureTBDim>>>(result.getRawDeviceBuffer(), locMap.getRawDeviceBuffer(), img.getRawDeviceBuffer(), w, h);
+    move<<<blocksTBDim, pictureTBDim>>>(result.getRawDeviceBuffer(), locMap.getRawDeviceBuffer(), img.getRawDeviceBuffer(), devTrans, w, h);
 
     cudaDeviceSynchronize();
 

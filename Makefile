@@ -19,7 +19,7 @@ affine: ./objs/Image.o ./objs/affine.o
 conv: ./objs/Image.o ./objs/naiveConv.o
 	$(CXX) $(LDFLAGS) -o $@ $^
 
-histo: ./objs/Image.o ./objs/histogram.o
+histo: ./objs/Image.o ./objs/histogram.o ./objs/scan.o
 	$(CXX) $(LDFLAGS) -o $@ $^
 
 $(OBJ_DIR)/%.o: $(SRC_DIR)/%.cu 

@@ -176,6 +176,7 @@ __global__ void conv(float *img_out, float *img_in, unsigned image_w, unsigned i
                     conv_w_x -= image_w;
                 
                 r += img_in[conv_w_y * image_w + conv_w_x] * conv_mask[i*conv_w + j];
+                __syncthreads();
             }
         }
         img_out[img_y * image_w + img_x] = r;
@@ -207,8 +208,11 @@ __global__ void sharedConv(float *img_out, float *img_in, unsigned image_w, unsi
             for(unsigned j = 0; j < conv_w; j++) {
                 // local idx
                 int shMemIdx = ((threadIdx.y - conv_h_pad + i) * blockDim.x) + threadIdx.x - conv_w_pad + j;
-                if(shMemIdx < 0 || shMemIdx >= shMemSize) {
-                    continue;
+                if(shMemIdx < 0) {
+                    shMemIdx = 0;
+                }
+                if(shMemIdx >= shMemSize) {
+                    shMemIdx = shMemSize - 1;
                 }
                 float curPix = localImageData[shMemIdx];
 
@@ -313,32 +317,26 @@ int main(int argc, char** argv) {
 
     outputImage.createBlankDeviceImage(w, h, 255);
 
-    dim3 pictureTBDim = {32, 32};
-    dim3 blocksTBDim = {(w/32) + 1, (h/32) + 1};
+    dim3 pictureTBDim = {32,32};
+    dim3 blocksTBDim = {(w/pictureTBDim.x) + 1, (h/pictureTBDim.y) + 1};
     printf("thread dims: x: %d y: %d\n", 32, 32);
     printf("block  dims: x: %d y: %d\n", blocksTBDim.x, blocksTBDim.y);
+    int sharedMem = (pictureTBDim.x);
+    sharedMem *= sharedMem;
 
-    toGrey<<<blocksTBDim, pictureTBDim>>>(g_img, img.getRawDeviceBuffer(), w, h);
-    cudaDeviceSynchronize();
-    conv<<<blocksTBDim, pictureTBDim>>>(g_imgsmooth, g_img, w, h, dev_blur_mask, fliter_dim, fliter_dim);
-    cudaDeviceSynchronize();
-    conv<<<blocksTBDim, pictureTBDim>>>(g_img , g_imgsmooth, w, h, devIx, sobelDim, sobelDim);
-    cudaDeviceSynchronize();
-    conv<<<blocksTBDim, pictureTBDim>>>(g_img3, g_imgsmooth, w, h, devIy, sobelDim, sobelDim);
-    cudaDeviceSynchronize();
+    // as opt as it gets
+    toGrey<<<{(w/128) + 1, h}, {128, 1}>>>(g_img, img.getRawDeviceBuffer(), w, h);
+    // 
+    sharedConv<<<blocksTBDim, pictureTBDim, sizeof(float) * (sharedMem)>>>(g_imgsmooth, g_img, w, h, dev_blur_mask, fliter_dim, fliter_dim);
+    sharedConv<<<blocksTBDim, pictureTBDim, sizeof(float) * (sharedMem)>>>(g_img , g_imgsmooth, w, h, devIx, sobelDim, sobelDim);
+    sharedConv<<<blocksTBDim, pictureTBDim, sizeof(float) * (sharedMem)>>>(g_img3, g_imgsmooth, w, h, devIy, sobelDim, sobelDim);
     sobelSum<<<blocksTBDim, pictureTBDim>>>(intens, dir, g_img, g_img3, w, h);
-    cudaDeviceSynchronize();
     gradientDimin<<<blocksTBDim, pictureTBDim>>>(g_img2, intens, dir, w, h);
-
-
     histogram<<<histGB,histTB>>>(devLocalHists, g_img2, w, h);
     reduce<<<histGB, ONE_HIST_SIZE>>>(devHist, devLocalHists);
-
-
     argMax<<<1, 1024, sizeof(int) * 1024 * 2>>>(low, devHist, ONE_HIST_SIZE/2);
     argMax<<<1, 1024, sizeof(int) * 1024 * 2>>>(high, devHist + ONE_HIST_SIZE/2, ONE_HIST_SIZE/2);
     dualThresh<<<blocksTBDim, pictureTBDim>>>(g_img4, g_img2, low, high, w, h);
-    
 
     cudaDeviceSynchronize();
 
@@ -364,47 +362,47 @@ int main(int argc, char** argv) {
     cudaMemcpy(hostOut, intens, sizeof(float) * w * h, cudaMemcpyDeviceToHost);
 
     char fname[250];
-    sprintf(fname, "i-%s", argv[2]);
+    // sprintf(fname, "i-%s", argv[2]);
 
-    outputImage.setChannel(hostOut, "r");
-    outputImage.setChannel(hostOut, "g");
-    outputImage.setChannel(hostOut, "b");
-    outputImage.writeImage(fname);
+    // outputImage.setChannel(hostOut, "r");
+    // outputImage.setChannel(hostOut, "g");
+    // outputImage.setChannel(hostOut, "b");
+    // outputImage.writeImage(fname);
 
-    cudaMemcpy(hostOut, g_img3, sizeof(float) * w * h, cudaMemcpyDeviceToHost);
-    sprintf(fname, "y-%s", argv[2]);
-    outputImage.setChannel(hostOut, "r");
-    outputImage.setChannel(hostOut, "g");
-    outputImage.setChannel(hostOut, "b");
-    outputImage.writeImage(fname);
+    // cudaMemcpy(hostOut, g_img3, sizeof(float) * w * h, cudaMemcpyDeviceToHost);
+    // sprintf(fname, "y-%s", argv[2]);
+    // outputImage.setChannel(hostOut, "r");
+    // outputImage.setChannel(hostOut, "g");
+    // outputImage.setChannel(hostOut, "b");
+    // outputImage.writeImage(fname);
 
-    cudaMemcpy(hostOut, g_imgsmooth, sizeof(float) * w * h, cudaMemcpyDeviceToHost);
-    sprintf(fname, "s-%s", argv[2]);
-    outputImage.setChannel(hostOut, "r");
-    outputImage.setChannel(hostOut, "g");
-    outputImage.setChannel(hostOut, "b");
-    outputImage.writeImage(fname);
+    // cudaMemcpy(hostOut, g_imgsmooth, sizeof(float) * w * h, cudaMemcpyDeviceToHost);
+    // sprintf(fname, "s-%s", argv[2]);
+    // outputImage.setChannel(hostOut, "r");
+    // outputImage.setChannel(hostOut, "g");
+    // outputImage.setChannel(hostOut, "b");
+    // outputImage.writeImage(fname);
 
-    cudaMemcpy(hostOut, g_img, sizeof(float) * w * h, cudaMemcpyDeviceToHost);
-    sprintf(fname, "x-%s", argv[2]);
-    outputImage.setChannel(hostOut, "r");
-    outputImage.setChannel(hostOut, "g");
-    outputImage.setChannel(hostOut, "b");
-    outputImage.writeImage(fname);
+    // cudaMemcpy(hostOut, g_img, sizeof(float) * w * h, cudaMemcpyDeviceToHost);
+    // sprintf(fname, "x-%s", argv[2]);
+    // outputImage.setChannel(hostOut, "r");
+    // outputImage.setChannel(hostOut, "g");
+    // outputImage.setChannel(hostOut, "b");
+    // outputImage.writeImage(fname);
 
-    cudaMemcpy(hostOut, g_img2, sizeof(float) * w * h, cudaMemcpyDeviceToHost);
-    sprintf(fname, "d-%s", argv[2]);
-    outputImage.setChannel(hostOut, "r");
-    outputImage.setChannel(hostOut, "g");
-    outputImage.setChannel(hostOut, "b");
-    outputImage.writeImage(fname);
+    // cudaMemcpy(hostOut, g_img2, sizeof(float) * w * h, cudaMemcpyDeviceToHost);
+    // sprintf(fname, "d-%s", argv[2]);
+    // outputImage.setChannel(hostOut, "r");
+    // outputImage.setChannel(hostOut, "g");
+    // outputImage.setChannel(hostOut, "b");
+    // outputImage.writeImage(fname);
 
-    cudaMemcpy(hostOut, g_img4, sizeof(float) * w * h, cudaMemcpyDeviceToHost);
-    sprintf(fname, "%s", argv[2]);
-    outputImage.setChannel(hostOut, "r");
-    outputImage.setChannel(hostOut, "g");
-    outputImage.setChannel(hostOut, "b");
-    outputImage.writeImage(fname);
+    // cudaMemcpy(hostOut, g_img4, sizeof(float) * w * h, cudaMemcpyDeviceToHost);
+    // sprintf(fname, "%s", argv[2]);
+    // outputImage.setChannel(hostOut, "r");
+    // outputImage.setChannel(hostOut, "g");
+    // outputImage.setChannel(hostOut, "b");
+    // outputImage.writeImage(fname);
 
     return 0;
 }
